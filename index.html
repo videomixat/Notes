@@ -70,6 +70,21 @@
     border-radius: 10px; font-size: .95rem; opacity: 0; transition: opacity .2s; pointer-events: none; }
   .toast.show { opacity: 1; }
   @media (prefers-reduced-motion: reduce) { .toast { transition: none; } }
+  .tabs { display: flex; gap: 8px; margin: 4px 0 16px; }
+  .tabs button { flex: 1; }
+  .tabs button[aria-selected="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+  .img-tools { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+  .img-tools .status { flex: 1; }
+  .grid { list-style: none; margin: 0; padding: 0; display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+  .card { border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: var(--surface); }
+  .card img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; cursor: zoom-in; }
+  .card small { display: block; color: var(--muted); font-size: .75rem; padding: 6px 8px 0; }
+  .card .acts { display: flex; gap: 4px; padding: 8px; }
+  .card .acts button { flex: 1; padding: 6px; font-size: .85rem; }
+  #viewer { position: fixed; inset: 0; background: rgba(0,0,0,.92); z-index: 10;
+    display: flex; align-items: center; justify-content: center; }
+  #viewer img { max-width: 100%; max-height: 100%; object-fit: contain; }
 </style>
 </head>
 <body>
@@ -93,9 +108,25 @@
       <button class="primary" id="newBtn">مقالة جديدة</button>
       <button id="logoutBtn" aria-label="خروج">خروج</button>
     </div>
-    <input class="search" id="search" type="search" placeholder="ابحث في العناوين والنصوص">
-    <ul class="items" id="items"></ul>
-    <p class="empty" id="empty" hidden></p>
+    <div class="tabs" role="tablist">
+      <button role="tab" id="tabArticles" aria-selected="true">المقالات</button>
+      <button role="tab" id="tabImages" aria-selected="false">الصور</button>
+    </div>
+    <div id="articlesPanel">
+      <input class="search" id="search" type="search" placeholder="ابحث في العناوين والنصوص">
+      <ul class="items" id="items"></ul>
+      <p class="empty" id="empty" hidden></p>
+    </div>
+    <div id="imagesPanel" hidden>
+      <div class="img-tools">
+        <button class="primary" id="addImgBtn">إضافة صور</button>
+        <span class="status" id="imgStatus"></span>
+        <button class="danger" id="deleteAllBtn">حذف الكل</button>
+      </div>
+      <input type="file" id="imgInput" accept="image/*" multiple hidden>
+      <ul class="grid" id="grid"></ul>
+      <p class="empty" id="imgEmpty" hidden></p>
+    </div>
   </div>
 </section>
 
@@ -113,6 +144,8 @@
   </div>
 </section>
 
+<div id="viewer" hidden><img alt=""></div>
+
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script type="module">
@@ -120,11 +153,10 @@ import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/fireba
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import { initializeFirestore, persistentLocalCache, collection, doc, addDoc, updateDoc, deleteDoc,
-  onSnapshot, query, orderBy, serverTimestamp }
+  onSnapshot, query, orderBy, serverTimestamp, writeBatch }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-// ===== Paste your Firebase config here
-
+// ===== Paste your Firebase config here =====
 const firebaseConfig = {
   apiKey: "AIzaSyAqELNUBB80_WhlOigiOIk-jOvz1DVJwYY",
   authDomain: "notes-e4da2.firebaseapp.com",
@@ -133,9 +165,7 @@ const firebaseConfig = {
   messagingSenderId: "857722848829",
   appId: "1:857722848829:web:4785facba5359154cdcc54"
 };
-
-
-
+// ===========================================
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
@@ -144,9 +174,11 @@ const db = initializeFirestore(app, { localCache: persistentLocalCache() });
 const $ = (id) => document.getElementById(id);
 const MAX_BYTES = 900_000; // Firestore doc limit is ~1 MiB
 let articles = [], currentId = null, saveTimer = null, saving = null, dirty = false, unsub = null;
+let images = [], unsubImg = null;
 
 const show = (id) => ["login", "list", "editor"].forEach(s => $(s).hidden = s !== id);
 const colRef = () => collection(db, "users", auth.currentUser.uid, "articles");
+const imgRef = () => collection(db, "users", auth.currentUser.uid, "images");
 
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.classList.add("show");
@@ -160,10 +192,15 @@ const words = (s) => (s.trim().match(/\S+/g) || []).length;
 // ----- Auth -----
 onAuthStateChanged(auth, (user) => {
   if (unsub) { unsub(); unsub = null; }
+  if (unsubImg) { unsubImg(); unsubImg = null; }
   if (!user) { show("login"); return; }
   unsub = onSnapshot(query(colRef(), orderBy("updatedAt", "desc")), (snap) => {
     articles = snap.docs.map(d => ({ id: d.id, ...d.data({ serverTimestamps: "estimate" }) }));
     renderList();
+  });
+  unsubImg = onSnapshot(query(imgRef(), orderBy("createdAt", "desc")), (snap) => {
+    images = snap.docs.map(d => ({ id: d.id, ...d.data({ serverTimestamps: "estimate" }) }));
+    renderImages();
   });
   show("list");
 });
@@ -279,6 +316,118 @@ async function copyText(text) {
 
 window.addEventListener("beforeunload", (e) => { if (dirty || saving) { save(); e.preventDefault(); } });
 document.addEventListener("visibilitychange", () => { if (document.hidden) save(); });
+
+// ----- Tabs -----
+function setTab(t) {
+  const img = t === "images";
+  $("tabArticles").setAttribute("aria-selected", !img);
+  $("tabImages").setAttribute("aria-selected", img);
+  $("articlesPanel").hidden = img;
+  $("imagesPanel").hidden = !img;
+  $("newBtn").hidden = img;
+}
+$("tabArticles").onclick = () => setTab("articles");
+$("tabImages").onclick = () => setTab("images");
+
+// ----- Images -----
+const MAX_IMG = 880_000; // data URL length, safely under the 1 MiB doc limit
+const kb = (n) => Math.round(n / 1024) + " ك.ب";
+const btn = (label, fn) => { const b = document.createElement("button"); b.textContent = label; b.onclick = fn; return b; };
+
+async function compress(file) {
+  const bmp = await createImageBitmap(file);
+  const c = document.createElement("canvas"), ctx = c.getContext("2d");
+  let max = 2000, q = 0.85;
+  for (let i = 0; i < 12; i++) {
+    const s = Math.min(1, max / Math.max(bmp.width, bmp.height));
+    c.width = Math.round(bmp.width * s); c.height = Math.round(bmp.height * s);
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    ctx.drawImage(bmp, 0, 0, c.width, c.height);
+    const data = c.toDataURL("image/jpeg", q);
+    if (data.length <= MAX_IMG) return { data, width: c.width, height: c.height };
+    if (q > 0.55) q -= 0.1; else max = Math.round(max * 0.8);
+  }
+  throw new Error("too-large");
+}
+
+async function uploadFiles(files) {
+  files = [...files].filter(f => f.type.startsWith("image/"));
+  if (!files.length) return;
+  let done = 0, failed = 0;
+  for (const f of files) {
+    $("imgStatus").textContent = `جارٍ رفع ${done + failed + 1} من ${files.length}…`;
+    try {
+      const { data, width, height } = await compress(f);
+      await addDoc(imgRef(), { data, name: f.name || "image", width, height,
+        size: Math.round(data.length * 0.75), createdAt: serverTimestamp() });
+      done++;
+    } catch { failed++; }
+  }
+  $("imgStatus").textContent = failed
+    ? `اكتمل رفع ${done}، وتعذّر رفع ${failed}.`
+    : "اكتمل الرفع.";
+}
+
+function renderImages() {
+  $("grid").innerHTML = "";
+  $("imgEmpty").hidden = images.length > 0;
+  $("imgEmpty").textContent = "لا توجد صور. اضغط «إضافة صور» أو الصق صورة هنا.";
+  $("deleteAllBtn").hidden = !images.length;
+  for (const im of images) {
+    const li = document.createElement("li"); li.className = "card";
+    const img = document.createElement("img");
+    img.src = im.data; img.alt = im.name; img.loading = "lazy";
+    img.onclick = () => { $("viewer").querySelector("img").src = im.data; $("viewer").hidden = false; };
+    const s = document.createElement("small");
+    s.textContent = fmtDate(im.createdAt) + " — " + kb(im.size);
+    const del = btn("حذف", () => deleteDoc(doc(imgRef(), im.id)).then(() => toast("حُذفت الصورة")));
+    del.className = "danger";
+    const acts = document.createElement("div"); acts.className = "acts";
+    acts.append(btn("تنزيل", () => downloadImg(im)), btn("نسخ", () => copyImg(im)), del);
+    li.append(img, s, acts); $("grid").append(li);
+  }
+}
+
+function downloadImg(im) {
+  const a = document.createElement("a");
+  a.href = im.data; a.download = im.name.replace(/\.[^.]+$/, "") + ".jpg";
+  document.body.append(a); a.click(); a.remove();
+}
+
+async function copyImg(im) {
+  const png = (async () => {
+    const img = new Image(); img.src = im.data; await img.decode();
+    const c = document.createElement("canvas");
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    c.getContext("2d").drawImage(img, 0, 0);
+    return new Promise(r => c.toBlob(r, "image/png"));
+  })();
+  try {
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": png })]);
+    toast("نُسخت الصورة");
+  } catch { toast("المتصفح لا يدعم نسخ الصور، استخدم التنزيل."); }
+}
+
+$("deleteAllBtn").onclick = async () => {
+  const ids = images.map(i => i.id);
+  if (!ids.length || !confirm(`حذف كل الصور (${ids.length})؟`)) return;
+  for (let i = 0; i < ids.length; i += 400) {
+    const b = writeBatch(db);
+    ids.slice(i, i + 400).forEach(id => b.delete(doc(imgRef(), id)));
+    await b.commit();
+  }
+  toast("حُذفت كل الصور");
+};
+
+$("addImgBtn").onclick = () => $("imgInput").click();
+$("imgInput").onchange = async (e) => { await uploadFiles(e.target.files); e.target.value = ""; };
+document.addEventListener("paste", (e) => {
+  if ($("list").hidden || $("imagesPanel").hidden) return;
+  const files = [...(e.clipboardData?.files || [])];
+  if (files.length) { e.preventDefault(); uploadFiles(files); }
+});
+$("viewer").onclick = () => { $("viewer").hidden = true; };
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") $("viewer").hidden = true; });
 </script>
 </body>
 </html>
