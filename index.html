@@ -123,16 +123,20 @@ import { initializeFirestore, persistentLocalCache, collection, doc, addDoc, upd
   onSnapshot, query, orderBy, serverTimestamp }
   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 
-// ===== Paste your Firebase config here =====
+// ===== Paste your Firebase config here
+
 const firebaseConfig = {
-  apiKey: "PASTE_HERE",
-  authDomain: "PASTE_HERE",
-  projectId: "PASTE_HERE",
-  storageBucket: "PASTE_HERE",
-  messagingSenderId: "PASTE_HERE",
-  appId: "PASTE_HERE"
+  apiKey: "AIzaSyAqELNUBB80_WhlOigiOIk-jOvz1DVJwYY",
+  authDomain: "notes-e4da2.firebaseapp.com",
+  projectId: "notes-e4da2",
+  storageBucket: "notes-e4da2.firebasestorage.app",
+  messagingSenderId: "857722848829",
+  appId: "1:857722848829:web:4785facba5359154cdcc54"
 };
-// ===========================================
+
+
+
+ ===========================================
 
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
